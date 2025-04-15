@@ -10,7 +10,7 @@
  * - ParseResumeOutput - The return type for the parseResume function.
  */
 
-import {ai} from '@/ai/ai-instance';
+import Anthropic from '@anthropic-ai/sdk';
 import {z} from 'genkit';
 
 const ParseResumeInputSchema = z.object({
@@ -29,45 +29,47 @@ const ParseResumeOutputSchema = z.object({
 export type ParseResumeOutput = z.infer<typeof ParseResumeOutputSchema>;
 
 export async function parseResume(input: ParseResumeInput): Promise<ParseResumeOutput> {
-  return parseResumeFlow(input);
+  const anthropic = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  });
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY environment variable not set.');
+  }
+
+  try {
+    const result = await anthropic.messages.create({
+      model: 'claude-3-opus-20240229', // Or another suitable model
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: `You are an expert HR professional. Please parse the following resume text and extract the relevant information. Structure the output as a JSON object with the following fields:
+
+            - name (string): The candidate's full name.
+            - email (string): The candidate's email address.
+            - phone (string): The candidate's phone number.
+            - skills (array of strings): A list of the candidate's skills.
+            - experience (array of strings): A list of the candidate's work experiences, including company names, job titles, and dates of employment.
+            - education (array of strings): A list of the candidate's educational qualifications, including institutions, degrees, and dates of graduation.
+
+            Resume Text:
+            ${input.resumeText}
+
+            Provide the output as a valid JSON object.`,
+        },
+      ],
+    });
+
+    const jsonOutput = result.content[0].text;
+    if (!jsonOutput) {
+      throw new Error('No output received from Anthropic API.');
+    }
+
+    return JSON.parse(jsonOutput) as ParseResumeOutput;
+  } catch (error) {
+    console.error('Error parsing resume with Anthropic API:', error);
+    throw new Error(`Failed to parse resume: ${error}`);
+  }
 }
 
-const prompt = ai.definePrompt({
-  name: 'parseResumePrompt',
-  input: {
-    schema: z.object({
-      resumeText: z.string().describe('The text content of the resume (extracted from PDF).'),
-    }),
-  },
-  output: {
-    schema: z.object({
-      name: z.string().describe('The name of the candidate.'),
-      email: z.string().email().describe('The email address of the candidate.'),
-      phone: z.string().describe('The phone number of the candidate.'),
-      skills: z.array(z.string()).describe('The list of skills of the candidate.'),
-      experience: z.array(z.string()).describe('The list of experiences of the candidate.'),
-      education: z.array(z.string()).describe('The list of educations of the candidate.'),
-    }),
-  },
-  prompt: `You are an expert resume parser. Extract the following information from the resume text provided.
-
-Resume Text: {{{resumeText}}}
-
-Output the extracted information in JSON format.
-`,
-});
-
-const parseResumeFlow = ai.defineFlow<
-  typeof ParseResumeInputSchema,
-  typeof ParseResumeOutputSchema
->(
-  {
-    name: 'parseResumeFlow',
-    inputSchema: ParseResumeInputSchema,
-    outputSchema: ParseResumeOutputSchema,
-  },
-  async input => {
-    const {output} = await prompt(input);
-    return output!;
-  }
-);
